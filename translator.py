@@ -75,7 +75,7 @@ REMOTE_CONFIG_URL = _load_remote_url()
 DEFAULT_CONFIG = {
     "model": "gemini-2.5-flash",
     "api_key": "",
-    "version": 1,
+    "version": 2,
     "provider": "gemini",
     "prompt_to_english": (
         "You are an expert legal translator for Indian courts. "
