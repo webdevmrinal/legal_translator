@@ -20,7 +20,12 @@ APP_NAME = "Legal Translator"
 CONFIG_DIR = os.path.join(os.environ.get("USERPROFILE", os.path.expanduser("~")), "Documents", "LegalTranslator")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "local_config.json")
 UPDATER_FLAG = os.path.join(CONFIG_DIR, "update_ready.txt")
-REMOTE_CONFIG_URL = "https://gist.githubusercontent.com/webdevmrinal/b71f32a1b102549ea5011433605d1b6b/raw/config.json"
+
+# Load secret config URL from build_config.py (gitignored) or env variable
+try:
+    from build_config import REMOTE_CONFIG_URL
+except ImportError:
+    REMOTE_CONFIG_URL = os.environ.get("LEGAL_TRANSLATOR_CONFIG_URL", "")
 
 DEFAULT_CONFIG = {
     "model": "gemini-2.5-flash",
@@ -65,7 +70,8 @@ class ConfigManager:
         os.makedirs(CONFIG_DIR, exist_ok=True)
         self.config = dict(DEFAULT_CONFIG)
         self.load_local()
-        threading.Thread(target=self.fetch_remote, daemon=True).start()
+        if REMOTE_CONFIG_URL:
+            threading.Thread(target=self.fetch_remote, daemon=True).start()
 
     def load_local(self):
         try:
@@ -84,6 +90,8 @@ class ConfigManager:
             pass
 
     def fetch_remote(self):
+        if not REMOTE_CONFIG_URL:
+            return False
         try:
             r = requests.get(REMOTE_CONFIG_URL, timeout=10)
             if r.status_code == 200:
@@ -222,10 +230,8 @@ class TranslatorApp:
         self.spinner_angle = 0
         self.spinner_task = None
         self._last_direction = "prompt_to_english"
-        # Update dialog state
         self._upd_win = None
         self._upd_widgets = {}
-        # Config viewer state
         self._cfg_win = None
         self._cfg_text = None
         self._cfg_refresh_btn = None
@@ -327,8 +333,10 @@ class TranslatorApp:
 
     def run_tray(self):
         menu = pystray.Menu(
-            pystray.MenuItem("Legal English (Ctrl+Shift+E)", lambda: self.trigger_translation("prompt_to_english")),
-            pystray.MenuItem("Hindi Devanagari (Ctrl+Shift+D)", lambda: self.trigger_translation("prompt_to_hindi")),
+            pystray.MenuItem("Legal English (Ctrl+Shift+E)",
+                             lambda: self.trigger_translation("prompt_to_english")),
+            pystray.MenuItem("Hindi Devanagari (Ctrl+Shift+D)",
+                             lambda: self.trigger_translation("prompt_to_hindi")),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Show Floating Toolbar", self.toggle_toolbar_action,
                              checked=lambda item: self.is_toolbar_visible),
@@ -360,7 +368,8 @@ class TranslatorApp:
         if self.is_translating:
             return
         self._last_direction = direction
-        threading.Thread(target=self._do_retranslate, args=(original_text, direction, active_hwnd), daemon=True).start()
+        threading.Thread(target=self._do_retranslate, args=(original_text, direction, active_hwnd),
+                         daemon=True).start()
 
     def _do_retranslate(self, text, direction, active_hwnd):
         self.is_translating = True
@@ -473,6 +482,13 @@ class TranslatorApp:
 
         def do_fetch():
             self._dismiss_dropdown()
+            if not REMOTE_CONFIG_URL:
+                messagebox.showwarning(APP_NAME,
+                                       "No remote config URL configured.\n"
+                                       "Set LEGAL_TRANSLATOR_CONFIG_URL environment variable\n"
+                                       "or create build_config.py.",
+                                       parent=self.root)
+                return
             threading.Thread(target=self._fetch_config_threaded, daemon=True).start()
 
         def do_show_cfg():
@@ -502,7 +518,8 @@ class TranslatorApp:
         if success:
             messagebox.showinfo(APP_NAME, "Configuration refreshed successfully.", parent=self.root)
         else:
-            messagebox.showwarning(APP_NAME, "Could not fetch remote config.\nCheck your internet connection.",
+            messagebox.showwarning(APP_NAME,
+                                   "Could not fetch remote config.\nCheck your internet connection.",
                                    parent=self.root)
 
     # ── Config viewer ──
@@ -539,6 +556,9 @@ class TranslatorApp:
         btn_frame.pack(side="bottom", fill="x")
 
         def do_refresh():
+            if not REMOTE_CONFIG_URL:
+                messagebox.showwarning(APP_NAME, "No remote config URL configured.", parent=win)
+                return
             self._cfg_refresh_btn.config(text="Refreshing...", state="disabled")
             threading.Thread(target=self._cfg_refresh_thread, daemon=True).start()
 
@@ -547,9 +567,11 @@ class TranslatorApp:
                                 padx=14, pady=4, command=do_refresh)
         refresh_btn.pack(side="left", padx=(20, 6))
         refresh_btn.bind("<Enter>",
-                         lambda e: refresh_btn.config(bg="#1E88E5") if refresh_btn["state"] != "disabled" else None)
+                         lambda e: refresh_btn.config(
+                             bg="#1E88E5") if refresh_btn["state"] != "disabled" else None)
         refresh_btn.bind("<Leave>",
-                         lambda e: refresh_btn.config(bg="#2196f3") if refresh_btn["state"] != "disabled" else None)
+                         lambda e: refresh_btn.config(
+                             bg="#2196f3") if refresh_btn["state"] != "disabled" else None)
         self._cfg_refresh_btn = refresh_btn
 
         close_btn = tk.Button(btn_frame, text="Close", bg="#555", fg="white",
@@ -583,6 +605,9 @@ class TranslatorApp:
         self._cfg_text = text_widget
 
         display_cfg = self.config.get_display_config()
+        # Also show whether remote URL is configured
+        display_cfg["_remote_config_url"] = REMOTE_CONFIG_URL[:30] + "..." if REMOTE_CONFIG_URL else "(not set)"
+        display_cfg["_app_version"] = APP_VERSION
         pretty = json.dumps(display_cfg, indent=2, ensure_ascii=False)
         text_widget.insert("1.0", pretty)
         text_widget.config(state="disabled")
@@ -606,6 +631,8 @@ class TranslatorApp:
             self._cfg_text.config(state="normal")
             self._cfg_text.delete("1.0", "end")
             new_cfg = self.config.get_display_config()
+            new_cfg["_remote_config_url"] = REMOTE_CONFIG_URL[:30] + "..." if REMOTE_CONFIG_URL else "(not set)"
+            new_cfg["_app_version"] = APP_VERSION
             self._cfg_text.insert("1.0", json.dumps(new_cfg, indent=2, ensure_ascii=False))
             self._cfg_text.config(state="disabled")
             if success:
@@ -707,7 +734,10 @@ class TranslatorApp:
         win.protocol("WM_DELETE_WINDOW", on_close)
 
         # Start check
-        threading.Thread(target=self._upd_check_thread, daemon=True).start()
+        if not REMOTE_CONFIG_URL:
+            self.ui_queue.put(("UPD", "error", "No remote config URL configured."))
+        else:
+            threading.Thread(target=self._upd_check_thread, daemon=True).start()
 
     def _upd_check_thread(self):
         try:
@@ -912,7 +942,7 @@ class TranslatorApp:
 
             subprocess.Popen(
                 ['cmd', '/c', bat_path],
-                creationflags=0x08000000,  # CREATE_NO_WINDOW
+                creationflags=0x08000000,
                 close_fds=True
             )
 
@@ -1068,12 +1098,13 @@ class TranslatorApp:
         win.geometry(f"{w}x{h}+{x}+{y}")
         win.minsize(620, 480)
 
-        # ── Bottom-up packing ──
+        # Bottom-up packing
 
         hint_frame = tk.Frame(win, bg="#EEEEEE")
         hint_frame.pack(side="bottom", fill="x")
         tk.Label(hint_frame,
-                 text="Tip: Edit the translation above, then choose an action  \u2022  Drag the divider to resize panels",
+                 text="Tip: Edit the translation above, then choose an action  "
+                      "\u2022  Drag the divider to resize panels",
                  font=("Segoe UI", 8), fg="#999", bg="#EEEEEE").pack(pady=5)
 
         btn_bar = tk.Frame(win, bg="#EEEEEE", pady=10, padx=18)
@@ -1220,6 +1251,8 @@ class TranslatorApp:
         cancel_btn.pack(side="right")
         cancel_btn.bind("<Enter>", lambda e: cancel_btn.config(bg="#E53935", fg="white"))
         cancel_btn.bind("<Leave>", lambda e: cancel_btn.config(bg="#BDBDBD", fg="#333"))
+
+    # ── Error / Key dialogs ──
 
     def _show_error_ui(self, msg):
         messagebox.showerror(APP_NAME, msg, parent=self.root)

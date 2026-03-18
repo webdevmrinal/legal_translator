@@ -1,3 +1,27 @@
-dist/
+# Build artifacts
 build/
+dist/
 *.spec
+
+# Secrets - NEVER commit
+build_config.py
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
