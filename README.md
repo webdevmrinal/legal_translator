@@ -105,7 +105,7 @@ Documents\LegalTranslator\local_config.json
 ```bash
 pip install pyinstaller
 
-pyinstaller --onefile --noconsole --icon=icon.ico --add-data "icon.png;." translator.py
+pyinstaller LegalTranslator.spec
 ```
 
 The packaged executable will be available in the `dist/` folder.

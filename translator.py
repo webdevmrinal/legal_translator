@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 import queue
 import ctypes
 
-APP_VERSION = 1
+APP_VERSION = 2
 APP_NAME = "Legal Translator"
 CONFIG_DIR = os.path.join(os.environ.get("USERPROFILE", os.path.expanduser("~")), "Documents", "LegalTranslator")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "local_config.json")
@@ -24,7 +24,6 @@ UPDATER_FLAG = os.path.join(CONFIG_DIR, "update_ready.txt")
 
 def _load_remote_url():
     """Load config URL from multiple sources with fallbacks."""
-
     # 1. Try build_config.py (bundled or local)
     try:
         from build_config import REMOTE_CONFIG_URL as url
@@ -75,7 +74,7 @@ REMOTE_CONFIG_URL = _load_remote_url()
 DEFAULT_CONFIG = {
     "model": "gemini-2.5-flash",
     "api_key": "",
-    "version": 2,
+    "version": 1,
     "provider": "gemini",
     "prompt_to_english": (
         "You are an expert legal translator for Indian courts. "
@@ -116,7 +115,6 @@ class ConfigManager:
         self.config = dict(DEFAULT_CONFIG)
         self.load_local()
         if REMOTE_CONFIG_URL:
-            # Save URL so future runs can find it even without build_config
             self.config["_remote_url"] = REMOTE_CONFIG_URL
             self.save_local()
             threading.Thread(target=self.fetch_remote, daemon=True).start()
@@ -156,7 +154,6 @@ class ConfigManager:
                     self.config[key] = remote[key]
                 if local_key:
                     self.config["api_key"] = local_key
-                # Preserve the remote URL
                 if url:
                     self.config["_remote_url"] = url
                 self.save_local()
@@ -188,7 +185,6 @@ class ConfigManager:
                 display[k] = val[:4] + "*" * (len(val) - 8) + val[-4:]
             elif val:
                 display[k] = "****"
-        # Mask remote URL partially too
         url = display.get("_remote_url", "")
         if url and len(url) > 40:
             display["_remote_url"] = url[:35] + "..."
@@ -299,7 +295,6 @@ class TranslatorApp:
         self._cfg_refresh_btn = None
 
     def _get_effective_url(self):
-        """Get the config URL from any available source."""
         return REMOTE_CONFIG_URL or self.config.config.get("_remote_url", "")
 
     def start(self):
@@ -620,7 +615,6 @@ class TranslatorApp:
 
         self._cfg_win = win
 
-        # Bottom buttons first
         btn_frame = tk.Frame(win, bg="#1E1E2E", pady=10)
         btn_frame.pack(side="bottom", fill="x")
 
@@ -651,7 +645,6 @@ class TranslatorApp:
         close_btn.bind("<Enter>", lambda e: close_btn.config(bg="#777"))
         close_btn.bind("<Leave>", lambda e: close_btn.config(bg="#555"))
 
-        # Title
         title_frame = tk.Frame(win, bg="#283593", pady=10)
         title_frame.pack(side="top", fill="x")
         tk.Label(title_frame, text="Active Configuration",
@@ -659,7 +652,6 @@ class TranslatorApp:
         tk.Label(title_frame, text="API keys are partially masked for security",
                  font=("Segoe UI", 8), fg="#B0BEC5", bg="#283593").pack()
 
-        # Config text
         text_frame = tk.Frame(win, bg="#1E1E2E")
         text_frame.pack(side="top", fill="both", expand=True, padx=16, pady=12)
 
@@ -744,7 +736,6 @@ class TranslatorApp:
 
         self._upd_win = win
 
-        # Bottom buttons FIRST
         btn_frame = tk.Frame(win, bg="#EEEEEE", pady=10, padx=20)
         btn_frame.pack(side="bottom", fill="x")
 
@@ -760,13 +751,11 @@ class TranslatorApp:
                                state="disabled", padx=16, pady=4, bd=0)
         action_btn.pack(side="left")
 
-        # Title
         title_frame = tk.Frame(win, bg="#283593", pady=10)
         title_frame.pack(side="top", fill="x")
         tk.Label(title_frame, text="App Update",
                  font=("Segoe UI", 13, "bold"), fg="white", bg="#283593").pack()
 
-        # Content
         content = tk.Frame(win, bg="#FAFAFA", padx=30, pady=15)
         content.pack(side="top", fill="both", expand=True)
 
@@ -798,7 +787,6 @@ class TranslatorApp:
 
         win.protocol("WM_DELETE_WINDOW", on_close)
 
-        # Start check
         url = self._get_effective_url()
         if not url:
             self.ui_queue.put(("UPD", "error", "No remote config URL configured."))
@@ -990,20 +978,51 @@ class TranslatorApp:
 
         bat_content = (
             '@echo off\n'
+            'setlocal\n'
+            '\n'
+            'REM Wait for old process to exit\n'
             ':waitloop\n'
             f'tasklist /FI "PID eq {pid}" 2>NUL | find /I "{pid}" >NUL\n'
             'if not errorlevel 1 (\n'
             '    timeout /t 1 /nobreak >nul\n'
             '    goto waitloop\n'
             ')\n'
+            '\n'
+            'REM Extra wait for file handles to release\n'
+            'timeout /t 3 /nobreak >nul\n'
+            '\n'
+            'REM Clean up PyInstaller temp folders\n'
+            'for /d %%i in ("%TEMP%\\_MEI*") do rd /s /q "%%i" 2>nul\n'
+            '\n'
+            'REM Kill any lingering processes using the exe\n'
+            f'taskkill /f /im "{os.path.basename(current_exe)}" 2>nul\n'
             'timeout /t 1 /nobreak >nul\n'
+            '\n'
+            'REM Try to copy new exe over old\n'
             f'copy /y "{new_path}" "{current_exe}"\n'
             'if errorlevel 1 (\n'
-            '    echo Update failed - could not replace file.\n'
-            '    pause\n'
-            '    exit /b 1\n'
+            '    echo First copy attempt failed, retrying...\n'
+            f'    del /f "{current_exe}" 2>nul\n'
+            '    timeout /t 2 /nobreak >nul\n'
+            f'    copy /y "{new_path}" "{current_exe}"\n'
+            '    if errorlevel 1 (\n'
+            '        echo.\n'
+            '        echo ============================================\n'
+            '        echo   UPDATE FAILED - Could not replace file\n'
+            '        echo ============================================\n'
+            '        echo.\n'
+            f'        echo New version saved at: {new_path}\n'
+            '        echo You can manually copy it to replace the old exe.\n'
+            '        echo.\n'
+            '        pause\n'
+            '        exit /b 1\n'
+            '    )\n'
             ')\n'
+            '\n'
+            'REM Start new version\n'
             f'start "" "{current_exe}"\n'
+            '\n'
+            'REM Cleanup temp files\n'
             f'del "{new_path}" >nul 2>&1\n'
             'del "%~f0" >nul 2>&1\n'
         )
@@ -1170,8 +1189,6 @@ class TranslatorApp:
         win.geometry(f"{w}x{h}+{x}+{y}")
         win.minsize(620, 480)
 
-        # Bottom-up packing
-
         hint_frame = tk.Frame(win, bg="#EEEEEE")
         hint_frame.pack(side="bottom", fill="x")
         tk.Label(hint_frame,
@@ -1193,7 +1210,6 @@ class TranslatorApp:
                                opaqueresize=True)
         paned.pack(side="top", fill="both", expand=True, padx=18, pady=(12, 6))
 
-        # Original pane
         orig_pane = tk.Frame(paned, bg="#FAFAFA")
         tk.Label(orig_pane, text="ORIGINAL TEXT",
                  font=("Segoe UI", 9, "bold"), fg="#888", bg="#FAFAFA").pack(anchor="w", pady=(0, 3))
@@ -1215,7 +1231,6 @@ class TranslatorApp:
         orig_text.config(state="disabled")
         paned.add(orig_pane, stretch="always")
 
-        # Translated pane
         trans_pane = tk.Frame(paned, bg="#FAFAFA")
         tk.Label(trans_pane, text="TRANSLATION  (editable)",
                  font=("Segoe UI", 10, "bold"), fg="#1a237e", bg="#FAFAFA").pack(anchor="w", pady=(4, 3))
@@ -1247,7 +1262,6 @@ class TranslatorApp:
 
         win.after(150, set_equal_sash)
 
-        # Button actions
         def _execute_action_thread(action_type, final_text, hwnd):
             if action_type == "replace":
                 pyperclip.copy(final_text)
