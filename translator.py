@@ -21,11 +21,56 @@ CONFIG_DIR = os.path.join(os.environ.get("USERPROFILE", os.path.expanduser("~"))
 CONFIG_FILE = os.path.join(CONFIG_DIR, "local_config.json")
 UPDATER_FLAG = os.path.join(CONFIG_DIR, "update_ready.txt")
 
-# Load secret config URL from build_config.py (gitignored) or env variable
-try:
-    from build_config import REMOTE_CONFIG_URL
-except ImportError:
-    REMOTE_CONFIG_URL = os.environ.get("LEGAL_TRANSLATOR_CONFIG_URL", "")
+
+def _load_remote_url():
+    """Load config URL from multiple sources with fallbacks."""
+
+    # 1. Try build_config.py (bundled or local)
+    try:
+        from build_config import REMOTE_CONFIG_URL as url
+        if url:
+            return url
+    except ImportError:
+        pass
+
+    # 2. Try config_url.txt file (bundled or local)
+    for base in [
+        getattr(sys, '_MEIPASS', None),
+        os.path.dirname(os.path.abspath(__file__)),
+        CONFIG_DIR,
+    ]:
+        if base is None:
+            continue
+        txt_path = os.path.join(base, "config_url.txt")
+        try:
+            if os.path.exists(txt_path):
+                with open(txt_path, "r", encoding="utf-8") as f:
+                    url = f.read().strip()
+                if url:
+                    return url
+        except:
+            pass
+
+    # 3. Try environment variable
+    url = os.environ.get("LEGAL_TRANSLATOR_CONFIG_URL", "")
+    if url:
+        return url
+
+    # 4. Try previously saved URL in local config
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            url = saved.get("_remote_url", "")
+            if url:
+                return url
+    except:
+        pass
+
+    return ""
+
+
+REMOTE_CONFIG_URL = _load_remote_url()
 
 DEFAULT_CONFIG = {
     "model": "gemini-2.5-flash",
@@ -71,6 +116,9 @@ class ConfigManager:
         self.config = dict(DEFAULT_CONFIG)
         self.load_local()
         if REMOTE_CONFIG_URL:
+            # Save URL so future runs can find it even without build_config
+            self.config["_remote_url"] = REMOTE_CONFIG_URL
+            self.save_local()
             threading.Thread(target=self.fetch_remote, daemon=True).start()
 
     def load_local(self):
@@ -90,10 +138,11 @@ class ConfigManager:
             pass
 
     def fetch_remote(self):
-        if not REMOTE_CONFIG_URL:
+        url = REMOTE_CONFIG_URL or self.config.get("_remote_url", "")
+        if not url:
             return False
         try:
-            r = requests.get(REMOTE_CONFIG_URL, timeout=10)
+            r = requests.get(url, timeout=10)
             if r.status_code == 200:
                 remote = r.json()
                 local_key = self.config.get("api_key", "")
@@ -107,6 +156,9 @@ class ConfigManager:
                     self.config[key] = remote[key]
                 if local_key:
                     self.config["api_key"] = local_key
+                # Preserve the remote URL
+                if url:
+                    self.config["_remote_url"] = url
                 self.save_local()
                 remote_ver = remote.get("version", APP_VERSION)
                 if remote_ver > APP_VERSION:
@@ -136,6 +188,16 @@ class ConfigManager:
                 display[k] = val[:4] + "*" * (len(val) - 8) + val[-4:]
             elif val:
                 display[k] = "****"
+        # Mask remote URL partially too
+        url = display.get("_remote_url", "")
+        if url and len(url) > 40:
+            display["_remote_url"] = url[:35] + "..."
+        display["_app_version"] = APP_VERSION
+        display["_config_url_source"] = (
+            "build_config.py" if REMOTE_CONFIG_URL else
+            "saved in local config" if self.config.get("_remote_url") else
+            "(not set)"
+        )
         return display
 
 
@@ -235,6 +297,10 @@ class TranslatorApp:
         self._cfg_win = None
         self._cfg_text = None
         self._cfg_refresh_btn = None
+
+    def _get_effective_url(self):
+        """Get the config URL from any available source."""
+        return REMOTE_CONFIG_URL or self.config.config.get("_remote_url", "")
 
     def start(self):
         self.check_update_on_start()
@@ -482,11 +548,14 @@ class TranslatorApp:
 
         def do_fetch():
             self._dismiss_dropdown()
-            if not REMOTE_CONFIG_URL:
+            url = self._get_effective_url()
+            if not url:
                 messagebox.showwarning(APP_NAME,
-                                       "No remote config URL configured.\n"
-                                       "Set LEGAL_TRANSLATOR_CONFIG_URL environment variable\n"
-                                       "or create build_config.py.",
+                                       "No remote config URL found.\n\n"
+                                       "Create one of these:\n"
+                                       "1. build_config.py with REMOTE_CONFIG_URL\n"
+                                       "2. config_url.txt with the URL\n"
+                                       "3. Set LEGAL_TRANSLATOR_CONFIG_URL env var",
                                        parent=self.root)
                 return
             threading.Thread(target=self._fetch_config_threaded, daemon=True).start()
@@ -556,7 +625,8 @@ class TranslatorApp:
         btn_frame.pack(side="bottom", fill="x")
 
         def do_refresh():
-            if not REMOTE_CONFIG_URL:
+            url = self._get_effective_url()
+            if not url:
                 messagebox.showwarning(APP_NAME, "No remote config URL configured.", parent=win)
                 return
             self._cfg_refresh_btn.config(text="Refreshing...", state="disabled")
@@ -605,9 +675,6 @@ class TranslatorApp:
         self._cfg_text = text_widget
 
         display_cfg = self.config.get_display_config()
-        # Also show whether remote URL is configured
-        display_cfg["_remote_config_url"] = REMOTE_CONFIG_URL[:30] + "..." if REMOTE_CONFIG_URL else "(not set)"
-        display_cfg["_app_version"] = APP_VERSION
         pretty = json.dumps(display_cfg, indent=2, ensure_ascii=False)
         text_widget.insert("1.0", pretty)
         text_widget.config(state="disabled")
@@ -631,8 +698,6 @@ class TranslatorApp:
             self._cfg_text.config(state="normal")
             self._cfg_text.delete("1.0", "end")
             new_cfg = self.config.get_display_config()
-            new_cfg["_remote_config_url"] = REMOTE_CONFIG_URL[:30] + "..." if REMOTE_CONFIG_URL else "(not set)"
-            new_cfg["_app_version"] = APP_VERSION
             self._cfg_text.insert("1.0", json.dumps(new_cfg, indent=2, ensure_ascii=False))
             self._cfg_text.config(state="disabled")
             if success:
@@ -734,16 +799,23 @@ class TranslatorApp:
         win.protocol("WM_DELETE_WINDOW", on_close)
 
         # Start check
-        if not REMOTE_CONFIG_URL:
+        url = self._get_effective_url()
+        if not url:
             self.ui_queue.put(("UPD", "error", "No remote config URL configured."))
         else:
             threading.Thread(target=self._upd_check_thread, daemon=True).start()
 
     def _upd_check_thread(self):
         try:
-            r = requests.get(REMOTE_CONFIG_URL, timeout=10)
+            url = self._get_effective_url()
+            if not url:
+                self.ui_queue.put(("UPD", "error", "No remote config URL."))
+                return
+
+            r = requests.get(url, timeout=10)
             if r.status_code != 200:
-                self.ui_queue.put(("UPD", "error", "Could not reach update server."))
+                self.ui_queue.put(("UPD", "error",
+                                   f"Could not reach update server (HTTP {r.status_code})."))
                 return
 
             remote = r.json()
@@ -756,7 +828,7 @@ class TranslatorApp:
 
             if not update_url:
                 self.ui_queue.put(("UPD", "error",
-                                   f"v{remote_ver} is available but no download URL is configured yet."))
+                                   f"v{remote_ver} is available but no download URL configured."))
                 return
 
             self.ui_queue.put(("UPD", "available", remote_ver, update_url))
